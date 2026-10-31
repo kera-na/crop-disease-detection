@@ -1,0 +1,28 @@
+                           precision    recall  f1-score   support
+
+       Cashew anthracnose       0.85      0.81      0.83       315
+           Cashew gumosis       0.80      0.99      0.88        75
+           Cashew healthy       0.93      0.91      0.92       260
+        Cashew leaf miner       0.88      0.88      0.88       296
+          Cashew red rust       0.97      0.99      0.98       323
+ Cassava bacterial blight       0.77      0.85      0.81       508
+       Cassava brown spot       0.83      0.81      0.82       314
+       Cassava green mite       0.82      0.79      0.81       186
+          Cassava healthy       0.91      0.86      0.88       221
+           Cassava mosaic       0.87      0.93      0.90       245
+      Maize fall armyworm       0.91      0.17      0.28        60
+         Maize grasshoper       0.88      0.83      0.85       139
+            Maize healthy       0.56      0.49      0.52        37
+        Maize leaf beetle       0.92      0.90      0.91       182
+        Maize leaf blight       0.56      0.63      0.59       210
+          Maize leaf spot       0.65      0.60      0.62       263
+       Maize streak virus       0.70      0.85      0.77       200
+           Tomato healthy       0.79      0.81      0.80       105
+       Tomato leaf blight       0.64      0.35      0.45       257
+         Tomato leaf curl       0.50      0.29      0.36       105
+Tomato septoria leaf spot       0.60      0.90      0.72       561
+  Tomato verticulium wilt       0.33      0.01      0.01       162
+
+                 accuracy                           0.77      5024
+                macro avg       0.76      0.71      0.71      5024
+             weighted avg       0.77      0.77      0.75      5024
