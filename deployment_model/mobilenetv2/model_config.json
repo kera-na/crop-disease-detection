@@ -1,0 +1,7 @@
+{
+  "display_name": "MobileNetV2",
+  "image_height": 128,
+  "image_width": 128,
+  "best_val_accuracy": 0.8246417045593262,
+  "best_val_loss": 0.5179041624069214
+}
