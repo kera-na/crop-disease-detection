@@ -1,8 +1,12 @@
+import os
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 import hashlib
 import hmac
+import io
 import json
-import os
 import re
+import zipfile
 from datetime import datetime
 from urllib.parse import quote_plus
 
@@ -11,9 +15,6 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from PIL import Image
-
-import os
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 from modules.model_loader import load_deployment
 from modules.predictor import predict_image, preprocess_image
@@ -291,6 +292,277 @@ def get_image_hash(pil_image):
     return hashlib.sha256(pil_image.tobytes()).hexdigest()
 
 
+# ---- Batch upload and probability helpers ----
+
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
+MAX_BATCH_IMAGES = 50       # images analysed per run
+MAX_IMAGE_SIDE = 640        # larger photos are shrunk to save memory
+MAX_FILE_MB = 25            # single images above this size are skipped
+MAX_ZIP_UNPACKED_MB = 300   # ZIP files that unpack to more than this are refused
+TOP_K = 5                   # possible diseases shown per image
+MIN_CONFIDENCE = 0.60       # below this the result needs review
+CLOSE_MARGIN = 0.15         # a gap below this between the top two needs review
+BATCH_OPTION = "Multiple images or ZIP folder"
+
+
+def shrink_image(img, max_side=MAX_IMAGE_SIDE):
+    img = img.convert("RGB")
+    img.thumbnail((max_side, max_side))
+    return img
+
+
+def collect_images(uploaded_files, limit=MAX_BATCH_IMAGES):
+    """Read uploaded images and ZIP files. Returns (images, notes).
+    images is a list of (name, PIL image). notes holds messages for the user."""
+    images, notes = [], []
+    skipped = 0
+    max_bytes = MAX_FILE_MB * 1024 * 1024
+
+    def add(name, data):
+        if len(data) > max_bytes:
+            notes.append(f"Skipped {name}: larger than {MAX_FILE_MB} MB.")
+            return
+        try:
+            with Image.open(io.BytesIO(data)) as img:
+                images.append((name, shrink_image(img)))
+        except Exception:
+            notes.append(f"Skipped {name}: not a readable image.")
+
+    for uploaded in uploaded_files:
+        lower = uploaded.name.lower()
+        if lower.endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(uploaded.getvalue())) as archive:
+                    members = [
+                        m for m in archive.infolist()
+                        if not m.is_dir()
+                        and m.filename.lower().endswith(IMAGE_EXTENSIONS)
+                        and "__MACOSX" not in m.filename
+                        and not os.path.basename(m.filename).startswith(".")
+                    ]
+                    if sum(m.file_size for m in members) > MAX_ZIP_UNPACKED_MB * 1024 * 1024:
+                        notes.append(f"Skipped {uploaded.name}: it unpacks to more than {MAX_ZIP_UNPACKED_MB} MB.")
+                        continue
+                    if not members:
+                        notes.append(f"{uploaded.name} contains no JPG or PNG images.")
+                    for member in members:
+                        if len(images) >= limit:
+                            skipped += 1
+                            continue
+                        if member.file_size > max_bytes:
+                            notes.append(f"Skipped {member.filename}: larger than {MAX_FILE_MB} MB.")
+                            continue
+                        add(f"{uploaded.name}/{member.filename}", archive.read(member))
+            except zipfile.BadZipFile:
+                notes.append(f"Skipped {uploaded.name}: not a valid ZIP file.")
+        elif lower.endswith(IMAGE_EXTENSIONS):
+            if len(images) >= limit:
+                skipped += 1
+            else:
+                add(uploaded.name, uploaded.getvalue())
+
+    if skipped:
+        notes.append(f"Only the first {limit} images were analysed. {skipped} more were skipped.")
+    return images, notes
+
+
+def predict_with_ranking(image, model, classes):
+    """Predict one image. Returns the top class, its confidence, and the
+    probability of every class sorted from most to least likely."""
+    input_shape = model.input_shape
+    if isinstance(input_shape, list):
+        input_shape = input_shape[0]
+    height, width = input_shape[1], input_shape[2]
+    batch = np.asarray(preprocess_image(image, width, height), dtype="float32")
+    if batch.ndim == 3:
+        batch = np.expand_dims(batch, axis=0)
+    probs = np.asarray(model.predict(batch, verbose=0)[0], dtype="float64")
+    order = np.argsort(probs)[::-1]
+    ranking = [(classes[int(i)], float(probs[i])) for i in order]
+    return {"class": ranking[0][0], "confidence": ranking[0][1], "ranking": ranking}
+
+
+def needs_review(ranking):
+    top = ranking[0][1]
+    gap = top - ranking[1][1] if len(ranking) > 1 else 1.0
+    return top < MIN_CONFIDENCE or gap < CLOSE_MARGIN
+
+
+def analyse_batch(images, mode, cnn, mobile, progress=None):
+    """Run the selected model or models on every image. cnn and mobile are
+    (model, classes) pairs. Returns one dictionary per image."""
+    rows = []
+    for index, (name, img) in enumerate(images, start=1):
+        cnn_result = mobile_result = None
+        if mode == "CNN":
+            result, used = predict_with_ranking(img, *cnn), "CNN"
+        elif mode == "MobileNetV2":
+            result, used = predict_with_ranking(img, *mobile), "MobileNetV2"
+        else:
+            cnn_result = predict_with_ranking(img, *cnn)
+            mobile_result = predict_with_ranking(img, *mobile)
+            if cnn_result["confidence"] >= mobile_result["confidence"]:
+                result, used = cnn_result, "CNN"
+            else:
+                result, used = mobile_result, "MobileNetV2"
+        rows.append(
+            {"name": name, "hash": get_image_hash(img), "model": used,
+             "result": result, "cnn": cnn_result, "mobile": mobile_result}
+        )
+        if progress:
+            progress(index, len(images))
+    return rows
+
+
+def batch_dataframe(rows):
+    records = []
+    for row in rows:
+        ranking = row["result"]["ranking"]
+        top_p = ranking[0][1]
+        second = ranking[1] if len(ranking) > 1 else ("", 0.0)
+        third = ranking[2] if len(ranking) > 2 else ("", 0.0)
+        record = {
+            "Image": row["name"],
+            "Prediction": ranking[0][0],
+            "Confidence (%)": round(top_p * 100, 2),
+            "Confidence level": get_severity(top_p),
+            "2nd possible": second[0],
+            "2nd (%)": round(second[1] * 100, 2),
+            "3rd possible": third[0],
+            "3rd (%)": round(third[1] * 100, 2),
+            "Review needed": "Yes" if needs_review(ranking) else "No",
+            "Model": row["model"],
+        }
+        if row["cnn"] is not None and row["mobile"] is not None:
+            record["CNN prediction"] = row["cnn"]["class"]
+            record["MobileNetV2 prediction"] = row["mobile"]["class"]
+            record["Models agree"] = "Yes" if models_agree(row["cnn"]["class"], row["mobile"]["class"]) else "No"
+        records.append(record)
+    return pd.DataFrame(records)
+
+
+def render_ranking(ranking, key, k=TOP_K):
+    """Bar chart of the k most likely diseases, plus a table of every class."""
+    top = ranking[:k]
+    df = pd.DataFrame(
+        {"Disease": [n for n, _ in top], "Probability (%)": [round(p * 100, 2) for _, p in top]}
+    )
+    fig = px.bar(
+        df.iloc[::-1], x="Probability (%)", y="Disease", orientation="h",
+        text="Probability (%)", template=T["template"],
+        color_discrete_sequence=[T["chart"][0]],
+    )
+    fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside", cliponaxis=False)
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=T["text"]), margin=dict(l=8, r=48, t=8, b=8),
+        height=70 + 42 * len(df), showlegend=False,
+        xaxis=dict(range=[0, 100], title=None, gridcolor=T["border"], linecolor=T["border"]),
+        yaxis=dict(title=None),
+    )
+    st.plotly_chart(fig, key=key)
+    with st.expander("Probability of every class"):
+        full = pd.DataFrame(
+            [{"Rank": i, "Disease": n, "Probability (%)": round(p * 100, 2)}
+             for i, (n, p) in enumerate(ranking, start=1)]
+        )
+        st.dataframe(full, hide_index=True)
+
+
+def render_uncertainty_note(ranking):
+    if needs_review(ranking):
+        text = f"The model is not certain. Most likely: {ranking[0][0]} ({ranking[0][1] * 100:.1f}%)"
+        if len(ranking) > 1:
+            text += f", then {ranking[1][0]} ({ranking[1][1] * 100:.1f}%)"
+        st.warning(text + ". Consider expert confirmation.")
+
+
+def render_batch_section(files, mode, cnn, mobile):
+    """Analyse many images and show the results. Returns (image, name) for the
+    image chosen for the detailed view, or (None, "") when nothing is ready."""
+    needed = [cnn] if mode == "CNN" else [mobile] if mode == "MobileNetV2" else [cnn, mobile]
+    if any(pair[0] is None for pair in needed):
+        st.error(
+            "The selected model is not ready. Check the model folders in the sidebar, "
+            "or choose a single available model in Analysis mode."
+        )
+        return None, ""
+
+    signature = hashlib.sha256(
+        ("|".join(f"{f.name}:{f.size}" for f in files) + f"|{mode}|{cnn_path}|{mobile_path}").encode()
+    ).hexdigest()
+    cache = st.session_state.get("batch_cache")
+
+    if not cache or cache["signature"] != signature:
+        with st.spinner("Reading images..."):
+            images, notes = collect_images(files)
+        if not images:
+            for note in notes:
+                st.warning(note)
+            st.error("No readable images were found. Upload JPG or PNG files, or a ZIP file that contains them.")
+            return None, ""
+        bar = st.progress(0.0, text="Analysing images...")
+        try:
+            rows = analyse_batch(
+                images, mode, cnn, mobile,
+                progress=lambda i, n: bar.progress(i / n, text=f"Analysing image {i} of {n}"),
+            )
+        except Exception as exc:
+            bar.empty()
+            st.error(f"Batch prediction failed: {exc}")
+            return None, ""
+        bar.empty()
+        for row in rows:
+            ranking = row["result"]["ranking"]
+            add_history_record(row["name"], ranking[0][0], ranking[0][1], row["model"], row["hash"])
+        st.session_state.batch_cache = {"signature": signature, "images": images, "rows": rows, "notes": notes}
+        cache = st.session_state.batch_cache
+
+    images, rows, notes = cache["images"], cache["rows"], cache["notes"]
+    for note in notes:
+        st.warning(note)
+
+    df = batch_dataframe(rows)
+    st.write("")
+    render_section_heading(
+        "Batch results",
+        f"{len(rows)} images analysed",
+        "Each row lists the three most likely diseases. Rows marked Review needed are uncertain.",
+    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Images analysed", len(df))
+    c2.metric("Review needed", int((df["Review needed"] == "Yes").sum()))
+    c3.metric("Most common prediction", df["Prediction"].mode().iloc[0])
+
+    st.dataframe(df, hide_index=True)
+    st.download_button(
+        "Download batch results (CSV)", data=df.to_csv(index=False).encode("utf-8"),
+        file_name="batch_predictions.csv", mime="text/csv",
+    )
+
+    counts = df["Prediction"].value_counts().reset_index()
+    counts.columns = ["Disease", "Detections"]
+    st.plotly_chart(styled_bar(counts, "Disease", angle=-30), key="batch_counts")
+
+    with st.expander("Thumbnails with predictions"):
+        cols = st.columns(5)
+        for i, ((name, img), row) in enumerate(zip(images, rows)):
+            ranking = row["result"]["ranking"]
+            thumb = img.copy()
+            thumb.thumbnail((200, 200))
+            with cols[i % 5]:
+                st.image(
+                    thumb, width=150,
+                    caption=f"{os.path.basename(name)}: {ranking[0][0]} ({ranking[0][1] * 100:.0f}%)",
+                )
+
+    labels = [f"{i}. {name}" for i, (name, _) in enumerate(images, start=1)]
+    choice = st.selectbox("Review one image in detail", labels, key="batch_detail_choice")
+    index = labels.index(choice)
+    st.image(images[index][1], caption=images[index][0], width=360)
+    return images[index][1], images[index][0]
+
+
 def add_history_record(image_name, disease, confidence, model_name, image_hash):
     """Avoid adding the same image repeatedly during Streamlit reruns."""
     if image_hash in {item.get("Image hash") for item in st.session_state.history}:
@@ -326,6 +598,11 @@ def render_model_result(title, result):
     st.markdown(f'<div class="result-disease">{result["class"]}</div>', unsafe_allow_html=True)
     st.metric("Confidence", f'{result["confidence"] * 100:.2f}%')
     st.markdown("</div>", unsafe_allow_html=True)
+    ranking = result.get("ranking")
+    if ranking:
+        render_uncertainty_note(ranking)
+        st.markdown("**Other possible diseases**")
+        render_ranking(ranking, key=f"ranking_{title}")
 
 
 def overlay_heatmap(image, heatmap, alpha=0.4):
@@ -528,11 +805,14 @@ if page == "Disease Detection":
 
     image = None
     image_name = ""
+    batch_files = []
     with st.container(border=True):
         input_col, preview_col = st.columns([1.05, 0.95], gap="large")
 
         with input_col:
-            input_type = st.radio("Image source", ["Upload image", "Use camera"], horizontal=True)
+            input_type = st.radio(
+                "Image source", ["Upload image", BATCH_OPTION, "Use camera"], horizontal=True
+            )
 
             if input_type == "Upload image":
                 uploaded_file = st.file_uploader(
@@ -545,6 +825,16 @@ if page == "Disease Detection":
                         image_name = uploaded_file.name
                     except Exception as exc:
                         st.error(f"Could not read the uploaded image: {exc}")
+            elif input_type == BATCH_OPTION:
+                batch_files = st.file_uploader(
+                    "Choose leaf photos or a ZIP file", type=["jpg", "jpeg", "png", "zip"],
+                    accept_multiple_files=True,
+                    help="Select several JPG or PNG files, or upload a ZIP file of a folder.",
+                )
+                st.caption(
+                    f"Up to {MAX_BATCH_IMAGES} images per run. To analyse a folder, compress it "
+                    "into a ZIP file and upload the ZIP."
+                )
             else:
                 camera_file = st.camera_input("Take a leaf photo")
                 if camera_file is not None:
@@ -557,7 +847,22 @@ if page == "Disease Detection":
             st.caption("Avoid strong shadows, blur, and backgrounds that hide the leaf.")
 
         with preview_col:
-            if image is not None:
+            if input_type == BATCH_OPTION:
+                st.markdown(
+                    f"""
+                    <div style="min-height: 280px; display: flex; flex-direction: column;
+                        align-items: center; justify-content: center; background: var(--surface-2);
+                        border: 1px dashed var(--border); border-radius: 12px; text-align: center; padding: 24px;">
+                        <div style="font-size: 2.6rem;">🗂️</div>
+                        <div style="font-weight: 600; margin-top: 8px;">Batch mode</div>
+                        <div style="font-size: .85rem; margin-top: 4px; color: var(--muted);">
+                            {len(batch_files) if batch_files else 0} file(s) selected. Results appear below.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            elif image is not None:
                 st.image(image, caption=image_name, use_container_width=True)
             else:
                 st.markdown(
@@ -575,6 +880,11 @@ if page == "Disease Detection":
                     unsafe_allow_html=True,
                 )
 
+    if input_type == BATCH_OPTION and batch_files:
+        image, image_name = render_batch_section(
+            batch_files, analysis_mode, (cnn_model, cnn_classes), (mobile_model, mobile_classes)
+        )
+
     if image is not None:
         image_hash = get_image_hash(image)
         result = selected_model = cnn_result = mobile_result = None
@@ -585,12 +895,12 @@ if page == "Disease Detection":
                     if cnn_model is None:
                         st.error("CNN model is not ready. Check the model folder in the sidebar.")
                     else:
-                        result, selected_model = predict_image(image, cnn_model, cnn_classes), "CNN"
+                        result, selected_model = predict_with_ranking(image, cnn_model, cnn_classes), "CNN"
                 elif analysis_mode == "MobileNetV2":
                     if mobile_model is None:
                         st.error("MobileNetV2 is not ready. Check the model folder in the sidebar.")
                     else:
-                        result, selected_model = predict_image(image, mobile_model, mobile_classes), "MobileNetV2"
+                        result, selected_model = predict_with_ranking(image, mobile_model, mobile_classes), "MobileNetV2"
                 else:
                     if cnn_model is None or mobile_model is None:
                         st.error(
@@ -598,8 +908,8 @@ if page == "Disease Detection":
                             "or select a single available model in the sidebar."
                         )
                     else:
-                        cnn_result = predict_image(image, cnn_model, cnn_classes)
-                        mobile_result = predict_image(image, mobile_model, mobile_classes)
+                        cnn_result = predict_with_ranking(image, cnn_model, cnn_classes)
+                        mobile_result = predict_with_ranking(image, mobile_model, mobile_classes)
                         if cnn_result["confidence"] >= mobile_result["confidence"]:
                             result, selected_model = cnn_result, "CNN"
                         else:
@@ -1335,6 +1645,8 @@ else:
         **Capabilities**
         - CNN and MobileNetV2 prediction
         - Side-by-side model comparison
+        - Batch analysis of many images or a ZIP folder, with CSV export
+        - Probability of the other possible diseases
         - Confidence and severity display
         - Disease descriptions, treatment, and prevention guidance
         - Grad-CAM explainability
