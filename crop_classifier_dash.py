@@ -27,6 +27,7 @@ from modules.experts import (
     SPECIALIZATIONS, add_expert, delete_expert, geocode, haversine_km,
     db_info, import_experts, init_db, list_experts, set_verified,
 )
+from modules.translations import LANGUAGES, LANGUAGE_NAMES, TRANSLATIONS
 
 
 APP_NAME = "Crop Disease Detection System"
@@ -44,6 +45,44 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ============================================================
+# LANGUAGE SUPPORT (English, French, Swahili)
+# ============================================================
+
+LANG = LANGUAGES.get(st.session_state.get("language_choice", "English"), "en")
+
+
+def t(text, **kwargs):
+    """Translate an English interface string. Unknown text stays in English."""
+    translated = TRANSLATIONS.get(LANG, {}).get(text, text)
+    return translated.format(**kwargs) if kwargs else translated
+
+
+def tr_level(value):
+    """Translate a confidence level such as 'High', with or without a leading icon."""
+    value = str(value)
+    head, _, tail = value.partition(" ")
+    if tail and not head.isalpha():
+        return f"{head} {t(tail)}"
+    return t(value)
+
+
+TABLE_TEXT_COLUMNS = (
+    "Prediction", "2nd possible", "3rd possible", "CNN prediction",
+    "MobileNetV2 prediction", "Disease", "Crop", "Review needed", "Models agree",
+)
+
+
+def localize_table(df):
+    """Copy of a table with translated column names, disease names and Yes/No values."""
+    out = df.copy()
+    for column in out.columns:
+        if column in TABLE_TEXT_COLUMNS:
+            out[column] = out[column].map(lambda v: t(v) if isinstance(v, str) else v)
+        elif column == "Confidence level":
+            out[column] = out[column].map(tr_level)
+    return out.rename(columns={c: t(c) for c in out.columns})
 
 # ============================================================
 # COLOR THEMES (light / dark mode and palette, selectable from the sidebar)
@@ -280,12 +319,12 @@ def cached_load_deployment(model_folder):
 
 def load_model_safely(model_folder, label):
     if not model_folder or not os.path.isdir(model_folder):
-        return None, None, f"{label} folder not found: {model_folder}"
+        return None, None, t("{label} folder not found: {folder}", label=label, folder=model_folder)
     try:
         model, classes, _config = cached_load_deployment(model_folder)
         return model, classes, None
     except Exception as exc:
-        return None, None, f"{label} could not load: {exc}"
+        return None, None, t("{label} could not load: {error}", label=label, error=exc)
 
 
 def get_image_hash(pil_image):
@@ -320,13 +359,13 @@ def collect_images(uploaded_files, limit=MAX_BATCH_IMAGES):
 
     def add(name, data):
         if len(data) > max_bytes:
-            notes.append(f"Skipped {name}: larger than {MAX_FILE_MB} MB.")
+            notes.append(t("Skipped {name}: larger than {mb} MB.", name=name, mb=MAX_FILE_MB))
             return
         try:
             with Image.open(io.BytesIO(data)) as img:
                 images.append((name, shrink_image(img)))
         except Exception:
-            notes.append(f"Skipped {name}: not a readable image.")
+            notes.append(t("Skipped {name}: not a readable image.", name=name))
 
     for uploaded in uploaded_files:
         lower = uploaded.name.lower()
@@ -341,20 +380,20 @@ def collect_images(uploaded_files, limit=MAX_BATCH_IMAGES):
                         and not os.path.basename(m.filename).startswith(".")
                     ]
                     if sum(m.file_size for m in members) > MAX_ZIP_UNPACKED_MB * 1024 * 1024:
-                        notes.append(f"Skipped {uploaded.name}: it unpacks to more than {MAX_ZIP_UNPACKED_MB} MB.")
+                        notes.append(t("Skipped {name}: it unpacks to more than {mb} MB.", name=uploaded.name, mb=MAX_ZIP_UNPACKED_MB))
                         continue
                     if not members:
-                        notes.append(f"{uploaded.name} contains no JPG or PNG images.")
+                        notes.append(t("{name} contains no JPG or PNG images.", name=uploaded.name))
                     for member in members:
                         if len(images) >= limit:
                             skipped += 1
                             continue
                         if member.file_size > max_bytes:
-                            notes.append(f"Skipped {member.filename}: larger than {MAX_FILE_MB} MB.")
+                            notes.append(t("Skipped {name}: larger than {mb} MB.", name=member.filename, mb=MAX_FILE_MB))
                             continue
                         add(f"{uploaded.name}/{member.filename}", archive.read(member))
             except zipfile.BadZipFile:
-                notes.append(f"Skipped {uploaded.name}: not a valid ZIP file.")
+                notes.append(t("Skipped {name}: not a valid ZIP file.", name=uploaded.name))
         elif lower.endswith(IMAGE_EXTENSIONS):
             if len(images) >= limit:
                 skipped += 1
@@ -362,7 +401,7 @@ def collect_images(uploaded_files, limit=MAX_BATCH_IMAGES):
                 add(uploaded.name, uploaded.getvalue())
 
     if skipped:
-        notes.append(f"Only the first {limit} images were analysed. {skipped} more were skipped.")
+        notes.append(t("Only the first {limit} images were analysed. {skipped} more were skipped.", limit=limit, skipped=skipped))
     return images, notes
 
 
@@ -443,13 +482,14 @@ def batch_dataframe(rows):
 
 def render_ranking(ranking, key, k=TOP_K):
     """Bar chart of the k most likely diseases, plus a table of every class."""
+    name_col, prob_col = t("Disease"), t("Probability (%)")
     top = ranking[:k]
     df = pd.DataFrame(
-        {"Disease": [n for n, _ in top], "Probability (%)": [round(p * 100, 2) for _, p in top]}
+        {name_col: [t(n) for n, _ in top], prob_col: [round(p * 100, 2) for _, p in top]}
     )
     fig = px.bar(
-        df.iloc[::-1], x="Probability (%)", y="Disease", orientation="h",
-        text="Probability (%)", template=T["template"],
+        df.iloc[::-1], x=prob_col, y=name_col, orientation="h",
+        text=prob_col, template=T["template"],
         color_discrete_sequence=[T["chart"][0]],
     )
     fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside", cliponaxis=False)
@@ -461,9 +501,9 @@ def render_ranking(ranking, key, k=TOP_K):
         yaxis=dict(title=None),
     )
     st.plotly_chart(fig, key=key)
-    with st.expander("Probability of every class"):
+    with st.expander(t("Probability of every class")):
         full = pd.DataFrame(
-            [{"Rank": i, "Disease": n, "Probability (%)": round(p * 100, 2)}
+            [{t("Rank"): i, name_col: t(n), prob_col: round(p * 100, 2)}
              for i, (n, p) in enumerate(ranking, start=1)]
         )
         st.dataframe(full, hide_index=True)
@@ -471,10 +511,14 @@ def render_ranking(ranking, key, k=TOP_K):
 
 def render_uncertainty_note(ranking):
     if needs_review(ranking):
-        text = f"The model is not certain. Most likely: {ranking[0][0]} ({ranking[0][1] * 100:.1f}%)"
-        if len(ranking) > 1:
-            text += f", then {ranking[1][0]} ({ranking[1][1] * 100:.1f}%)"
-        st.warning(text + ". Consider expert confirmation.")
+        second = ranking[1] if len(ranking) > 1 else ranking[0]
+        st.warning(
+            t(
+                "The model is not certain. Most likely: {first} ({p1:.1f}%), then {second} ({p2:.1f}%). Consider expert confirmation.",
+                first=t(ranking[0][0]), p1=ranking[0][1] * 100,
+                second=t(second[0]), p2=second[1] * 100,
+            )
+        )
 
 
 def render_batch_section(files, mode, cnn, mobile):
@@ -482,34 +526,31 @@ def render_batch_section(files, mode, cnn, mobile):
     image chosen for the detailed view, or (None, "") when nothing is ready."""
     needed = [cnn] if mode == "CNN" else [mobile] if mode == "MobileNetV2" else [cnn, mobile]
     if any(pair[0] is None for pair in needed):
-        st.error(
-            "The selected model is not ready. Check the model folders in the sidebar, "
-            "or choose a single available model in Analysis mode."
-        )
+        st.error(t("The selected model is not ready. Check the model folders in the sidebar, or choose a single available model in Analysis mode."))
         return None, ""
 
     signature = hashlib.sha256(
-        ("|".join(f"{f.name}:{f.size}" for f in files) + f"|{mode}|{cnn_path}|{mobile_path}").encode()
+        ("|".join(f"{f.name}:{f.size}" for f in files) + f"|{mode}|{cnn_path}|{mobile_path}|{LANG}").encode()
     ).hexdigest()
     cache = st.session_state.get("batch_cache")
 
     if not cache or cache["signature"] != signature:
-        with st.spinner("Reading images..."):
+        with st.spinner(t("Reading images...")):
             images, notes = collect_images(files)
         if not images:
             for note in notes:
                 st.warning(note)
-            st.error("No readable images were found. Upload JPG or PNG files, or a ZIP file that contains them.")
+            st.error(t("No readable images were found. Upload JPG or PNG files, or a ZIP file that contains them."))
             return None, ""
-        bar = st.progress(0.0, text="Analysing images...")
+        bar = st.progress(0.0, text=t("Analysing images..."))
         try:
             rows = analyse_batch(
                 images, mode, cnn, mobile,
-                progress=lambda i, n: bar.progress(i / n, text=f"Analysing image {i} of {n}"),
+                progress=lambda i, n: bar.progress(i / n, text=t("Analysing image {i} of {n}", i=i, n=n)),
             )
         except Exception as exc:
             bar.empty()
-            st.error(f"Batch prediction failed: {exc}")
+            st.error(t("Batch prediction failed: {error}", error=exc))
             return None, ""
         bar.empty()
         for row in rows:
@@ -525,26 +566,28 @@ def render_batch_section(files, mode, cnn, mobile):
     df = batch_dataframe(rows)
     st.write("")
     render_section_heading(
-        "Batch results",
-        f"{len(rows)} images analysed",
-        "Each row lists the three most likely diseases. Rows marked Review needed are uncertain.",
+        t("Batch results"),
+        t("{n} images analysed", n=len(rows)),
+        t("Each row lists the three most likely diseases. Rows marked Review needed are uncertain."),
     )
     c1, c2, c3 = st.columns(3)
-    c1.metric("Images analysed", len(df))
-    c2.metric("Review needed", int((df["Review needed"] == "Yes").sum()))
-    c3.metric("Most common prediction", df["Prediction"].mode().iloc[0])
+    c1.metric(t("Images analysed"), len(df))
+    c2.metric(t("Review needed"), int((df["Review needed"] == "Yes").sum()))
+    c3.metric(t("Most common prediction"), t(df["Prediction"].mode().iloc[0]))
 
-    st.dataframe(df, hide_index=True)
+    shown = localize_table(df)
+    st.dataframe(shown, hide_index=True)
     st.download_button(
-        "Download batch results (CSV)", data=df.to_csv(index=False).encode("utf-8"),
+        t("Download batch results (CSV)"), data=shown.to_csv(index=False).encode("utf-8-sig"),
         file_name="batch_predictions.csv", mime="text/csv",
     )
 
     counts = df["Prediction"].value_counts().reset_index()
     counts.columns = ["Disease", "Detections"]
+    counts["Disease"] = counts["Disease"].map(t)
     st.plotly_chart(styled_bar(counts, "Disease", angle=-30), key="batch_counts")
 
-    with st.expander("Thumbnails with predictions"):
+    with st.expander(t("Thumbnails with predictions")):
         cols = st.columns(5)
         for i, ((name, img), row) in enumerate(zip(images, rows)):
             ranking = row["result"]["ranking"]
@@ -553,11 +596,11 @@ def render_batch_section(files, mode, cnn, mobile):
             with cols[i % 5]:
                 st.image(
                     thumb, width=150,
-                    caption=f"{os.path.basename(name)}: {ranking[0][0]} ({ranking[0][1] * 100:.0f}%)",
+                    caption=f"{os.path.basename(name)}: {t(ranking[0][0])} ({ranking[0][1] * 100:.0f}%)",
                 )
 
     labels = [f"{i}. {name}" for i, (name, _) in enumerate(images, start=1)]
-    choice = st.selectbox("Review one image in detail", labels, key="batch_detail_choice")
+    choice = st.selectbox(t("Review one image in detail"), labels, key="batch_detail_choice")
     index = labels.index(choice)
     st.image(images[index][1], caption=images[index][0], width=360)
     return images[index][1], images[index][0]
@@ -595,13 +638,13 @@ def render_section_heading(kicker, heading, subtitle=None):
 def render_model_result(title, result):
     st.markdown('<div class="result-panel">', unsafe_allow_html=True)
     st.markdown(f"**{title}**")
-    st.markdown(f'<div class="result-disease">{result["class"]}</div>', unsafe_allow_html=True)
-    st.metric("Confidence", f'{result["confidence"] * 100:.2f}%')
+    st.markdown(f'<div class="result-disease">{t(result["class"])}</div>', unsafe_allow_html=True)
+    st.metric(t("Confidence"), f'{result["confidence"] * 100:.2f}%')
     st.markdown("</div>", unsafe_allow_html=True)
     ranking = result.get("ranking")
     if ranking:
         render_uncertainty_note(ranking)
-        st.markdown("**Other possible diseases**")
+        st.markdown(f"**{t('Other possible diseases')}**")
         render_ranking(ranking, key=f"ranking_{title}")
 
 
@@ -636,7 +679,7 @@ def styled_bar(df, x, y="Detections", angle=0):
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color=T["text"]), margin=dict(l=8, r=8, t=12, b=8),
         xaxis=dict(title=None, tickangle=angle, gridcolor=T["border"], linecolor=T["border"]),
-        yaxis=dict(title=y, gridcolor=T["border"], zerolinecolor=T["border"]),
+        yaxis=dict(title=t(y), gridcolor=T["border"], zerolinecolor=T["border"]),
     )
     return fig
 
@@ -649,7 +692,7 @@ def verify_gemini_api_key():
     st.session_state.pop("gemini_api_key_entry", None)
 
     if not candidate:
-        st.session_state.gemini_api_status = "Enter your Gemini API key first."
+        st.session_state.gemini_api_status = t("Enter your Gemini API key first.")
         st.session_state.gemini_api_connected = False
         return
 
@@ -664,7 +707,7 @@ def verify_gemini_api_key():
     except Exception as exc:
         st.session_state.gemini_api_connected = False
         st.session_state.gemini_api_key = None
-        st.session_state.gemini_api_status = f"Connection failed: {exc}"
+        st.session_state.gemini_api_status = t("Connection failed: {error}", error=exc)
 
 
 def disconnect_gemini_api():
@@ -682,20 +725,23 @@ def submit_farmer_question():
 
     try:
         if not api_key or not st.session_state.get("gemini_api_connected", False):
-            st.session_state.assistant_error = "Connect and verify your Gemini API key first."
+            st.session_state.assistant_error = t("Connect and verify your Gemini API key first.")
         elif not question:
-            st.session_state.assistant_error = "Type your farming question first."
+            st.session_state.assistant_error = t("Type your farming question first.")
         else:
+            question_for_model = question
+            if LANG != "en":
+                question_for_model += f"\n\n(Please answer in {LANGUAGE_NAMES[LANG]}.)"
             st.session_state.assistant_answer = ask_farmer_assistant(
-                api_key, disease, confidence, question
+                api_key, disease, confidence, question_for_model
             )
             st.session_state.assistant_error = None
     except Exception as exc:
-        st.session_state.assistant_error = f"The AI assistant request failed: {exc}"
+        st.session_state.assistant_error = t("The AI assistant request failed: {error}", error=exc)
         if any(t in str(exc).lower() for t in ("api key", "unauthorized", "401", "403", "invalid")):
             st.session_state.gemini_api_connected = False
             st.session_state.gemini_api_key = None
-            st.session_state.gemini_api_status = "Authentication failed. Please reconnect your key."
+            st.session_state.gemini_api_status = t("Authentication failed. Please reconnect your key.")
 
 
 # ============================================================
@@ -718,45 +764,48 @@ for key, default in {
 # ============================================================
 
 with st.sidebar:
+    st.selectbox("Language / Langue / Lugha", list(LANGUAGES), key="language_choice")
+
     st.markdown(
-        """
-        <div class="brand"><div class="brand-mark">🌿</div><div class="brand-name">Crop Disease<br>Detection System</div></div>
+        f"""
+        <div class="brand"><div class="brand-mark">🌿</div><div class="brand-name">{t(APP_NAME)}</div></div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("### Navigation")
+    st.markdown(f"### {t('Navigation')}")
     page = st.radio(
-        "Open section",
+        t("Open section"),
         ["Disease Detection", "Business Analytics", "Find an Expert", "Prediction History", "About"],
+        format_func=t,
         label_visibility="collapsed",
     )
 
     st.markdown("---")
-    st.markdown("### Model configuration")
-    cnn_path = st.text_input("CNN model folder", value=os.getenv("CNN_MODEL_DIR", "deployment_model/cnn"))
+    st.markdown(f"### {t('Model configuration')}")
+    cnn_path = st.text_input(t("CNN model folder"), value=os.getenv("CNN_MODEL_DIR", "deployment_model/cnn"))
     mobile_path = st.text_input(
-        "MobileNetV2 model folder",
+        t("MobileNetV2 model folder"),
         value=os.getenv("MOBILENET_MODEL_DIR", "deployment_model/mobilenetv2"),
     )
     analysis_mode = st.selectbox(
-        "Analysis mode", ["Compare Both Models", "CNN", "MobileNetV2"], index=0
+        t("Analysis mode"), ["Compare Both Models", "CNN", "MobileNetV2"], index=0, format_func=t
     )
 
     st.markdown("---")
-    st.markdown("### Appearance")
+    st.markdown(f"### {t('Appearance')}")
     st.radio(
-        "Mode", MODES, key="theme_mode", horizontal=True,
-        index=MODES.index(default_mode),
+        t("Mode"), MODES, key="theme_mode", horizontal=True,
+        index=MODES.index(default_mode), format_func=t,
     )
     st.selectbox(
-        "Color palette", list(THEMES), key="theme_family",
-        index=list(THEMES).index(DEFAULT_FAMILY),
+        t("Color palette"), list(THEMES), key="theme_family",
+        index=list(THEMES).index(DEFAULT_FAMILY), format_func=t,
     )
 
     st.markdown("---")
-    st.caption("Supported crops")
-    st.markdown("\n".join(f"- {c}" for c in CROPS))
+    st.caption(t("Supported crops"))
+    st.markdown("\n".join(f"- {t(c)}" for c in CROPS))
 
 
 # ============================================================
@@ -774,10 +823,9 @@ mobile_model, mobile_classes, mobile_error = load_model_safely(mobile_path, "Mob
 st.markdown(
     f"""
     <div class="hero">
-        <div class="page-title">{APP_NAME}</div>
+        <div class="page-title">{t(APP_NAME)}</div>
         <div class="page-subtitle">
-            Screen crop leaf images for disease, compare deep learning models,
-            and review practical treatment guidance.
+            {t("Screen crop leaf images for disease, compare deep learning models, and review practical treatment guidance.")}
         </div>
     </div>
     """,
@@ -795,12 +843,12 @@ if page == "Disease Detection":
         if err:
             st.sidebar.warning(err)
         else:
-            st.sidebar.success(ready)
+            st.sidebar.success(t(ready))
 
     render_section_heading(
-        "Step 1",
-        "Provide a leaf image",
-        "Use a clear, well-lit photo of a single leaf with the affected area in focus.",
+        t("Step 1"),
+        t("Provide a leaf image"),
+        t("Use a clear, well-lit photo of a single leaf with the affected area in focus."),
     )
 
     image = None
@@ -811,69 +859,62 @@ if page == "Disease Detection":
 
         with input_col:
             input_type = st.radio(
-                "Image source", ["Upload image", BATCH_OPTION, "Use camera"], horizontal=True
+                t("Image source"), ["Upload image", BATCH_OPTION, "Use camera"],
+                horizontal=True, format_func=t,
             )
 
             if input_type == "Upload image":
                 uploaded_file = st.file_uploader(
-                    "Choose a leaf photo", type=["jpg", "jpeg", "png"],
-                    help="Supported formats: JPG and PNG.",
+                    t("Choose a leaf photo"), type=["jpg", "jpeg", "png"],
+                    help=t("Supported formats: JPG and PNG."),
                 )
                 if uploaded_file is not None:
                     try:
                         image = Image.open(uploaded_file).convert("RGB")
                         image_name = uploaded_file.name
                     except Exception as exc:
-                        st.error(f"Could not read the uploaded image: {exc}")
+                        st.error(t("Could not read the uploaded image: {error}", error=exc))
             elif input_type == BATCH_OPTION:
                 batch_files = st.file_uploader(
-                    "Choose leaf photos or a ZIP file", type=["jpg", "jpeg", "png", "zip"],
+                    t("Choose leaf photos or a ZIP file"), type=["jpg", "jpeg", "png", "zip"],
                     accept_multiple_files=True,
-                    help="Select several JPG or PNG files, or upload a ZIP file of a folder.",
+                    help=t("Select several JPG or PNG files, or upload a ZIP file of a folder."),
                 )
                 st.caption(
-                    f"Up to {MAX_BATCH_IMAGES} images per run. To analyse a folder, compress it "
-                    "into a ZIP file and upload the ZIP."
+                    t("Up to {n} images per run. To analyse a folder, compress it into a ZIP file and upload the ZIP.",
+                      n=MAX_BATCH_IMAGES)
                 )
             else:
-                camera_file = st.camera_input("Take a leaf photo")
+                camera_file = st.camera_input(t("Take a leaf photo"))
                 if camera_file is not None:
                     try:
                         image = Image.open(camera_file).convert("RGB")
                         image_name = "Camera capture"
                     except Exception as exc:
-                        st.error(f"Could not read the camera image: {exc}")
+                        st.error(t("Could not read the camera image: {error}", error=exc))
 
-            st.caption("Avoid strong shadows, blur, and backgrounds that hide the leaf.")
+            st.caption(t("Avoid strong shadows, blur, and backgrounds that hide the leaf."))
 
         with preview_col:
             if input_type == BATCH_OPTION:
+                preview_icon, preview_title = "🗂️", t("Batch mode")
+                preview_text = t("{n} file(s) selected. Results appear below.", n=len(batch_files) if batch_files else 0)
+            else:
+                preview_icon, preview_title = "🍃", t("Leaf preview")
+                preview_text = t("Your image will appear here.")
+
+            if image is not None and input_type != BATCH_OPTION:
+                st.image(image, caption=image_name, use_container_width=True)
+            else:
                 st.markdown(
                     f"""
                     <div style="min-height: 280px; display: flex; flex-direction: column;
                         align-items: center; justify-content: center; background: var(--surface-2);
                         border: 1px dashed var(--border); border-radius: 12px; text-align: center; padding: 24px;">
-                        <div style="font-size: 2.6rem;">🗂️</div>
-                        <div style="font-weight: 600; margin-top: 8px;">Batch mode</div>
+                        <div style="font-size: 2.6rem;">{preview_icon}</div>
+                        <div style="font-weight: 600; margin-top: 8px;">{preview_title}</div>
                         <div style="font-size: .85rem; margin-top: 4px; color: var(--muted);">
-                            {len(batch_files) if batch_files else 0} file(s) selected. Results appear below.
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            elif image is not None:
-                st.image(image, caption=image_name, use_container_width=True)
-            else:
-                st.markdown(
-                    """
-                    <div style="min-height: 280px; display: flex; flex-direction: column;
-                        align-items: center; justify-content: center; background: var(--surface-2);
-                        border: 1px dashed var(--border); border-radius: 12px; text-align: center; padding: 24px;">
-                        <div style="font-size: 2.6rem;">🍃</div>
-                        <div style="font-weight: 600; margin-top: 8px;">Leaf preview</div>
-                        <div style="font-size: .85rem; margin-top: 4px; color: var(--muted);">
-                            Your image will appear here.
+                            {preview_text}
                         </div>
                     </div>
                     """,
@@ -889,24 +930,21 @@ if page == "Disease Detection":
         image_hash = get_image_hash(image)
         result = selected_model = cnn_result = mobile_result = None
 
-        with st.spinner("Analyzing the leaf..."):
+        with st.spinner(t("Analyzing the leaf...")):
             try:
                 if analysis_mode == "CNN":
                     if cnn_model is None:
-                        st.error("CNN model is not ready. Check the model folder in the sidebar.")
+                        st.error(t("CNN model is not ready. Check the model folder in the sidebar."))
                     else:
                         result, selected_model = predict_with_ranking(image, cnn_model, cnn_classes), "CNN"
                 elif analysis_mode == "MobileNetV2":
                     if mobile_model is None:
-                        st.error("MobileNetV2 is not ready. Check the model folder in the sidebar.")
+                        st.error(t("MobileNetV2 is not ready. Check the model folder in the sidebar."))
                     else:
                         result, selected_model = predict_with_ranking(image, mobile_model, mobile_classes), "MobileNetV2"
                 else:
                     if cnn_model is None or mobile_model is None:
-                        st.error(
-                            "Comparison requires both models. Check both model folders "
-                            "or select a single available model in the sidebar."
-                        )
+                        st.error(t("Comparison requires both models. Check both model folders or select a single available model in the sidebar."))
                     else:
                         cnn_result = predict_with_ranking(image, cnn_model, cnn_classes)
                         mobile_result = predict_with_ranking(image, mobile_model, mobile_classes)
@@ -915,7 +953,7 @@ if page == "Disease Detection":
                         else:
                             result, selected_model = mobile_result, "MobileNetV2"
             except Exception as exc:
-                st.error(f"Prediction failed: {exc}")
+                st.error(t("Prediction failed: {error}", error=exc))
 
         if result is not None:
             disease = result["class"]
@@ -926,20 +964,20 @@ if page == "Disease Detection":
 
             st.write("")
             render_section_heading(
-                "Step 2",
-                "Analysis",
-                "Predictions are screening results, not a confirmed laboratory diagnosis.",
+                t("Step 2"),
+                t("Analysis"),
+                t("Predictions are screening results, not a confirmed laboratory diagnosis."),
             )
 
             m1, m2, m3 = st.columns(3)
-            m1.metric("Prediction", disease)
-            m2.metric("Confidence", f"{confidence * 100:.2f}%")
-            m3.metric("Confidence level", severity)
+            m1.metric(t("Prediction"), t(disease))
+            m2.metric(t("Confidence"), f"{confidence * 100:.2f}%")
+            m3.metric(t("Confidence level"), tr_level(severity))
             st.progress(max(0.0, min(confidence, 1.0)))
             st.write("")
 
             tab_results, tab_guidance, tab_xai, tab_ai = st.tabs(
-                ["Results", "Guidance", "Explainability", "AI Agronomist"]
+                [t("Results"), t("Guidance"), t("Explainability"), t("AI Agronomist")]
             )
 
             # ---- Results ----
@@ -947,41 +985,37 @@ if page == "Disease Detection":
                 if cnn_result is not None and mobile_result is not None:
                     left, right = st.columns(2, gap="large")
                     with left:
-                        render_model_result("CNN model", cnn_result)
+                        render_model_result(t("CNN model"), cnn_result)
                     with right:
-                        render_model_result("MobileNetV2 model", mobile_result)
+                        render_model_result(t("MobileNetV2 model"), mobile_result)
                     st.write("")
                     if models_agree(cnn_result["class"], mobile_result["class"]):
-                        st.success("Both models predict the same disease class.")
+                        st.success(t("Both models predict the same disease class."))
                     else:
-                        st.warning(
-                            "The models disagree. Review the leaf image carefully "
-                            "and consider expert confirmation."
-                        )
+                        st.warning(t("The models disagree. Review the leaf image carefully and consider expert confirmation."))
                     st.caption(
-                        f"The report and explainability view use the higher-confidence "
-                        f"prediction from {selected_model}."
+                        t("The report and explainability view use the higher-confidence prediction from {model}.",
+                          model=selected_model)
                     )
                 else:
-                    render_model_result(f"{selected_model} model", result)
+                    render_model_result(t("{model} model", model=selected_model), result)
 
                 st.write("")
                 report_col, note_col = st.columns([1, 2])
                 with report_col:
                     try:
                         st.download_button(
-                            "⬇️ Download PDF report",
+                            t("⬇️ Download PDF report"),
                             data=create_pdf_report(disease, confidence * 100, severity),
                             file_name="crop_disease_report.pdf",
                             mime="application/pdf",
                             use_container_width=True,
                         )
                     except Exception as exc:
-                        st.error(f"PDF report generation failed: {exc}")
+                        st.error(t("PDF report generation failed: {error}", error=exc))
                 with note_col:
                     st.markdown(
-                        '<div class="soft-note">The report contains the prediction, confidence '
-                        'score, and confidence level. Keep a copy with your inspection records.</div>',
+                        f'<div class="soft-note">{t("The report contains the prediction, confidence score, and confidence level. Keep a copy with your inspection records.")}</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -995,19 +1029,16 @@ if page == "Disease Detection":
                 ]:
                     with col:
                         with st.container(border=True):
-                            st.markdown(f"#### {heading}")
-                            st.write(info.get(field, fallback))
+                            st.markdown(f"#### {t(heading)}")
+                            st.write(info.get(field, t(fallback)))
 
             # ---- Explainability ----
             with tab_xai:
-                st.write(
-                    "Grad-CAM highlights the image regions that most influenced the "
-                    "model. Use it as a visual aid, not as proof of disease."
-                )
+                st.write(t("Grad-CAM highlights the image regions that most influenced the model. Use it as a visual aid, not as proof of disease."))
                 try:
                     model_obj = cnn_model if selected_model == "CNN" else mobile_model
                     if model_obj is None:
-                        st.warning("The selected model is not available.")
+                        st.warning(t("The selected model is not available."))
                     else:
                         input_shape = model_obj.input_shape
                         if isinstance(input_shape, list):
@@ -1015,23 +1046,23 @@ if page == "Disease Detection":
                         height, width = input_shape[1], input_shape[2]
 
                         if height is None or width is None:
-                            st.warning("The model input dimensions are dynamic. Grad-CAM needs fixed dimensions.")
+                            st.warning(t("The model input dimensions are dynamic. Grad-CAM needs fixed dimensions."))
                         else:
                             img_array = preprocess_image(image, width, height)
                             last_conv = find_last_conv_layer(model_obj)
                             if last_conv:
                                 heatmap = make_gradcam_heatmap(img_array, model_obj, last_conv)
                                 g1, g2 = st.columns(2)
-                                g1.image(image, caption="Original", use_container_width=True)
+                                g1.image(image, caption=t("Original"), use_container_width=True)
                                 g2.image(
                                     overlay_heatmap(image, heatmap),
-                                    caption=f"Grad-CAM ({last_conv})",
+                                    caption=t("Grad-CAM ({layer})", layer=last_conv),
                                     use_container_width=True,
                                 )
                             else:
-                                st.warning("No convolutional layer was found for Grad-CAM.")
+                                st.warning(t("No convolutional layer was found for Grad-CAM."))
                 except Exception as exc:
-                    st.warning(f"Grad-CAM could not be generated: {exc}")
+                    st.warning(t("Grad-CAM could not be generated: {error}", error=exc))
 
             # ---- AI Agronomist ----
             with tab_ai:
@@ -1039,47 +1070,37 @@ if page == "Disease Detection":
                 st.session_state.assistant_confidence_context = confidence
 
                 if not st.session_state.gemini_api_connected:
-                    st.write(
-                        "Enter your Gemini API key to enable the assistant. The key is "
-                        "verified, then this form is removed. It is kept in this session only."
-                    )
+                    st.write(t("Enter your Gemini API key to enable the assistant. The key is verified, then this form is removed. It is kept in this session only."))
                     with st.form("gemini_connect_form", clear_on_submit=False):
                         st.text_input(
-                            "Gemini API key", type="password", key="gemini_api_key_entry",
-                            help="Not written to a file or database.",
+                            t("Gemini API key"), type="password", key="gemini_api_key_entry",
+                            help=t("Not written to a file or database."),
                         )
-                        st.form_submit_button("Connect and verify", on_click=verify_gemini_api_key)
+                        st.form_submit_button(t("Connect and verify"), on_click=verify_gemini_api_key)
                     if st.session_state.gemini_api_status:
                         st.error(st.session_state.gemini_api_status)
                 else:
                     with st.form("agronomist_request_form", clear_on_submit=True):
                         st.text_area(
-                            "Your farming question",
-                            placeholder=(
-                                "How should I manage this disease?\n"
-                                "What signs should I monitor?\n"
-                                "What prevention steps should I take?"
-                            ),
+                            t("Your farming question"),
+                            placeholder=t("How should I manage this disease?\nWhat signs should I monitor?\nWhat prevention steps should I take?"),
                             key="farmer_question_input",
                         )
-                        st.form_submit_button("Ask Agronomist", on_click=submit_farmer_question)
+                        st.form_submit_button(t("Ask Agronomist"), on_click=submit_farmer_question)
 
                     if st.session_state.assistant_error:
                         st.error(st.session_state.assistant_error)
                     if st.session_state.assistant_answer:
                         with st.container(border=True):
-                            st.markdown("#### Assistant response")
+                            st.markdown(f"#### {t('Assistant response')}")
                             st.markdown(st.session_state.assistant_answer)
 
                     st.button(
-                        "Disconnect API key", key="disconnect_gemini_api_button",
+                        t("Disconnect API key"), key="disconnect_gemini_api_button",
                         on_click=disconnect_gemini_api, type="secondary",
                     )
 
-            st.caption(
-                "For serious crop damage or uncertain results, consult a qualified "
-                "agricultural officer or plant pathologist."
-            )
+            st.caption(t("For serious crop damage or uncertain results, consult a qualified agricultural officer or plant pathologist."))
 
 
 # ============================================================
@@ -1099,9 +1120,9 @@ elif page == "Find an Expert":
             lat="lat", lon="lon", color="Type", hover_name="Name",
             hover_data={"Specialization": True, "Organisation": True,
                         "lat": False, "lon": False, "Type": False},
-            color_discrete_map={"Verified expert": T["chart"][0],
-                                "Unverified expert": T["chart"][2],
-                                "Your location": T["chart"][4]},
+            color_discrete_map={t("Verified expert"): T["chart"][0],
+                                t("Unverified expert"): T["chart"][2],
+                                t("Your location"): T["chart"][4]},
             center=center, zoom=zoom, height=480,
         )
         if hasattr(px, "scatter_map"):
@@ -1120,10 +1141,9 @@ elif page == "Find an Expert":
         return fig
 
     render_section_heading(
-        "Expert directory",
-        "Find an agriculture expert",
-        "Browse registered agricultural officers, agronomists and plant disease "
-        "specialists on the map, or register your own profile.",
+        t("Expert directory"),
+        t("Find an agriculture expert"),
+        t("Browse registered agricultural officers, agronomists and plant disease specialists on the map, or register your own profile."),
     )
 
     def get_admin_password():
@@ -1133,23 +1153,23 @@ elif page == "Find an Expert":
             secret = ""
         return str(secret or os.getenv("ADMIN_PASSWORD") or DEFAULT_ADMIN_CODE)
 
-    tabs = st.tabs(["Find experts", "Register as expert", "Admin"])
+    tabs = st.tabs([t("Find experts"), t("Register as expert"), t("Admin")])
 
     # ---------------- FIND ----------------
     with tabs[0]:
         with st.container(border=True):
             f1, f2, f3 = st.columns([1.4, 1, 1])
             user_location = f1.text_input(
-                "Your location (optional)",
-                placeholder="Example: Seri Kembangan, Selangor, Malaysia",
-                help="Used to sort experts by distance. It is only sent to OpenStreetMap to find coordinates.",
+                t("Your location (optional)"),
+                placeholder=t("Example: Seri Kembangan, Selangor, Malaysia"),
+                help=t("Used to sort experts by distance. It is only sent to OpenStreetMap to find coordinates."),
             ).strip()
-            spec_filter = f2.selectbox("Specialization", ["Any"] + SPECIALIZATIONS)
-            crop_filter = f3.selectbox("Crop", ["Any crop"] + CROPS)
+            spec_filter = f2.selectbox(t("Specialization"), ["Any"] + SPECIALIZATIONS, format_func=t)
+            crop_filter = f3.selectbox(t("Crop"), ["Any crop"] + CROPS, format_func=t)
 
         user_pos = cached_geocode(user_location) if user_location else None
         if user_location and user_pos is None:
-            st.warning("Could not find that location. Try a nearby town or add the country.")
+            st.warning(t("Could not find that location. Try a nearby town or add the country."))
 
         experts = list_experts()
         if spec_filter != "Any":
@@ -1167,17 +1187,17 @@ elif page == "Find an Expert":
         rows = [
             {
                 "Name": e["name"],
-                "Specialization": e["specialization"],
-                "Organisation": e["organisation"] or "Independent",
+                "Specialization": t(e["specialization"]),
+                "Organisation": e["organisation"] or t("Independent"),
                 "lat": e["lat"], "lon": e["lon"],
-                "Type": "Verified expert" if e["verified"] else "Unverified expert",
+                "Type": t("Verified expert") if e["verified"] else t("Unverified expert"),
             }
             for e in experts
         ]
         if user_pos:
             rows.append({
-                "Name": "You are here", "Specialization": "", "Organisation": user_location,
-                "lat": user_pos[0], "lon": user_pos[1], "Type": "Your location",
+                "Name": t("You are here"), "Specialization": "", "Organisation": user_location,
+                "lat": user_pos[0], "lon": user_pos[1], "Type": t("Your location"),
             })
 
         if rows:
@@ -1190,23 +1210,23 @@ elif page == "Find an Expert":
         else:
             map_df = pd.DataFrame(
                 [{"Name": "", "Specialization": "", "Organisation": "", "lat": 0.0,
-                  "lon": 0.0, "Type": "Verified expert"}]
+                  "lon": 0.0, "Type": t("Verified expert")}]
             ).iloc[0:0]
             center, zoom = {"lat": 10.0, "lon": 20.0}, 1.2
 
         st.plotly_chart(build_expert_map(map_df, center, zoom), use_container_width=True)
 
-        st.markdown(f"### {len(experts)} expert{'s' if len(experts) != 1 else ''} found")
+        st.markdown("### " + t("{n} expert(s) found", n=len(experts)))
         if not experts:
-            st.info("No registered experts match these filters yet. Use the **Register as expert** tab to add one.")
+            st.info(t("No registered experts match these filters yet. Use the **Register as expert** tab to add one."))
 
         for e in experts:
             with st.container(border=True):
                 left, right = st.columns([3, 1.4])
-                badge = "✅ Verified" if e["verified"] else "⚠️ Unverified"
+                badge = t("✅ Verified") if e["verified"] else t("⚠️ Unverified")
                 with left:
                     st.markdown(f"**{e['name']}** · {badge}")
-                    st.caption(f"{e['specialization']} · {e['organisation'] or 'Independent'}")
+                    st.caption(f"{t(e['specialization'])} · {e['organisation'] or t('Independent')}")
                     st.write(f"📍 {e['location']}")
                     if e["crops"]:
                         st.write(f"🌱 {e['crops'].replace(',', ', ')}")
@@ -1214,82 +1234,75 @@ elif page == "Find an Expert":
                         st.write(e["notes"])
                 with right:
                     if e["distance_km"] is not None:
-                        st.metric("Distance", f"{e['distance_km']:.1f} km")
+                        st.metric(t("Distance"), f"{e['distance_km']:.1f} km")
                     digits = re.sub(r"[^\d+]", "", e["phone"])
                     st.markdown(f"📞 [{e['phone']}](tel:{digits})")
                     if e["email"]:
                         st.markdown(f"✉️ [{e['email']}](mailto:{e['email']})")
                     st.markdown(
-                        f"🗺️ [Open in Maps](https://www.google.com/maps/search/?api=1&query={e['lat']},{e['lon']})"
+                        f"🗺️ [{t('Open in Maps')}](https://www.google.com/maps/search/?api=1&query={e['lat']},{e['lon']})"
                     )
 
-        st.caption(
-            "Listings are submitted by experts themselves. Verify an expert's organisation "
-            "and qualifications before sharing farm details or paying for a service."
-        )
+        st.caption(t("Listings are submitted by experts themselves. Verify an expert's organisation and qualifications before sharing farm details or paying for a service."))
 
-        with st.expander("Can't find an expert nearby? Search external directories"):
+        with st.expander(t("Can't find an expert nearby? Search external directories")):
             if user_location:
                 q = quote_plus(f"agriculture extension office {user_location}")
-                st.link_button("Search Google Maps", f"https://www.google.com/maps/search/?api=1&query={q}")
+                st.link_button(t("Search Google Maps"), f"https://www.google.com/maps/search/?api=1&query={q}")
                 st.link_button(
-                    "Find government agriculture offices",
+                    t("Find government agriculture offices"),
                     "https://www.google.com/search?q=" + quote_plus(
                         "official government agriculture department contact " + user_location),
                 )
             else:
-                st.caption("Enter your location above to enable external search links.")
+                st.caption(t("Enter your location above to enable external search links."))
 
     # ---------------- REGISTER ----------------
     with tabs[1]:
-        st.markdown("### Register as an agriculture expert")
-        st.write(
-            "Add your profile so farmers can find and contact you directly. "
-            "New listings appear as **Unverified** until an administrator approves them."
-        )
+        st.markdown(f"### {t('Register as an agriculture expert')}")
+        st.write(t("Add your profile so farmers can find and contact you directly. New listings appear as **Unverified** until an administrator approves them."))
 
         with st.form("expert_register_form", clear_on_submit=True):
             r1, r2 = st.columns(2)
-            reg_name = r1.text_input("Full name *")
-            reg_spec = r2.selectbox("Specialization *", SPECIALIZATIONS)
+            reg_name = r1.text_input(t("Full name *"))
+            reg_spec = r2.selectbox(t("Specialization *"), SPECIALIZATIONS, format_func=t)
 
             r3, r4 = st.columns(2)
-            reg_org = r3.text_input("Organisation (optional)", placeholder="Department, company or university")
-            reg_crops = r4.multiselect("Crops you advise on", CROPS, default=CROPS)
+            reg_org = r3.text_input(t("Organisation (optional)"), placeholder=t("Department, company or university"))
+            reg_crops = r4.multiselect(t("Crops you advise on"), CROPS, default=CROPS, format_func=t)
 
             r5, r6 = st.columns(2)
-            reg_phone = r5.text_input("Phone number *", placeholder="+60 12 345 6789")
-            reg_email = r6.text_input("Email (optional)")
+            reg_phone = r5.text_input(t("Phone number *"), placeholder="+60 12 345 6789")
+            reg_email = r6.text_input(t("Email (optional)"))
 
             reg_location = st.text_input(
-                "Work location *",
-                placeholder="Office or town, e.g. Serdang, Selangor, Malaysia",
-                help="Use your office or town. Avoid your home address.",
+                t("Work location *"),
+                placeholder=t("Office or town, e.g. Serdang, Selangor, Malaysia"),
+                help=t("Use your office or town. Avoid your home address."),
             )
-            with st.expander("Set exact map coordinates (optional)"):
-                st.caption("Only needed if the location above cannot be found automatically.")
+            with st.expander(t("Set exact map coordinates (optional)")):
+                st.caption(t("Only needed if the location above cannot be found automatically."))
                 c1, c2 = st.columns(2)
-                reg_lat = c1.number_input("Latitude", value=0.0, format="%.6f", min_value=-90.0, max_value=90.0)
-                reg_lon = c2.number_input("Longitude", value=0.0, format="%.6f", min_value=-180.0, max_value=180.0)
+                reg_lat = c1.number_input(t("Latitude"), value=0.0, format="%.6f", min_value=-90.0, max_value=90.0)
+                reg_lon = c2.number_input(t("Longitude"), value=0.0, format="%.6f", min_value=-180.0, max_value=180.0)
 
-            reg_notes = st.text_area("Short description (optional)", max_chars=300,
-                                     placeholder="Services offered, languages spoken, working hours")
+            reg_notes = st.text_area(t("Short description (optional)"), max_chars=300,
+                                     placeholder=t("Services offered, languages spoken, working hours"))
             reg_consent = st.checkbox(
-                "I agree that my name, specialization, phone number, email and work location "
-                "will be shown publicly in this directory. *"
+                t("I agree that my name, specialization, phone number, email and work location will be shown publicly in this directory. *")
             )
-            reg_submit = st.form_submit_button("Register", use_container_width=True)
+            reg_submit = st.form_submit_button(t("Register"), use_container_width=True)
 
         if reg_submit:
             digits = re.sub(r"\D", "", reg_phone)
             if not reg_name.strip() or not reg_location.strip():
-                st.error("Name and work location are required.")
+                st.error(t("Name and work location are required."))
             elif not 7 <= len(digits) <= 15:
-                st.error("Enter a valid phone number (7 to 15 digits).")
+                st.error(t("Enter a valid phone number (7 to 15 digits)."))
             elif reg_email.strip() and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", reg_email.strip()):
-                st.error("Enter a valid email address or leave it empty.")
+                st.error(t("Enter a valid email address or leave it empty."))
             elif not reg_consent:
-                st.error("Please accept the public listing agreement to register.")
+                st.error(t("Please accept the public listing agreement to register."))
             else:
                 if reg_lat != 0.0 or reg_lon != 0.0:
                     coords = (reg_lat, reg_lon)
@@ -1298,20 +1311,14 @@ elif page == "Find an Expert":
                     coords = (found[0], found[1]) if found else None
 
                 if coords is None:
-                    st.error(
-                        "The location could not be found on the map. Add the country, "
-                        "or enter exact coordinates and submit again."
-                    )
+                    st.error(t("The location could not be found on the map. Add the country, or enter exact coordinates and submit again."))
                 else:
                     add_expert(
                         reg_name.strip(), reg_spec, reg_org.strip(), reg_crops,
                         reg_phone.strip(), reg_email.strip(), reg_location.strip(),
                         coords[0], coords[1], reg_notes.strip(),
                     )
-                    st.success(
-                        "Registration received. Your profile is now visible on the map "
-                        "and marked Unverified until approved."
-                    )
+                    st.success(t("Registration received. Your profile is now visible on the map and marked Unverified until approved."))
 
     # ---------------- ADMIN ----------------
     with tabs[2]:
@@ -1446,9 +1453,9 @@ elif page == "Find an Expert":
 
 elif page == "Business Analytics":
     render_section_heading(
-        "Management overview",
-        "Business Analytics",
-        "Operational view of crop disease detections, model usage, and confidence.",
+        t("Management overview"),
+        t("Business Analytics"),
+        t("Operational view of crop disease detections, model usage, and confidence."),
     )
 
     if st.session_state.history:
@@ -1491,23 +1498,20 @@ elif page == "Business Analytics":
         analytics_df["Crop"] = analytics_df["Disease"].apply(infer_crop)
 
     if is_demo:
-        st.info(
-            "Preview: the figures below are illustrative sample data, not real "
-            "records. Run predictions to see your current session data."
-        )
+        st.info(t("Preview: the figures below are illustrative sample data, not real records. Run predictions to see your current session data."))
     else:
-        st.success("Showing prediction records from the current session only.")
+        st.success(t("Showing prediction records from the current session only."))
 
     f1, f2, f3 = st.columns(3)
     with f1:
         opts = sorted(analytics_df["Crop"].astype(str).unique())
-        sel_crops = st.multiselect("Crop", opts, default=opts)
+        sel_crops = st.multiselect(t("Crop"), opts, default=opts, format_func=t)
     with f2:
         opts = sorted(analytics_df["Model"].astype(str).unique())
-        sel_models = st.multiselect("Model", opts, default=opts)
+        sel_models = st.multiselect(t("Model"), opts, default=opts)
     with f3:
         opts = sorted(analytics_df["Disease"].astype(str).unique())
-        sel_diseases = st.multiselect("Disease class", opts, default=opts)
+        sel_diseases = st.multiselect(t("Disease class"), opts, default=opts, format_func=t)
 
     filtered = analytics_df[
         analytics_df["Crop"].astype(str).isin(sel_crops)
@@ -1517,34 +1521,36 @@ elif page == "Business Analytics":
 
     total = len(filtered)
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total detections", total)
-    k2.metric("Average confidence", f"{filtered['Confidence (%)'].mean():.1f}%" if total else "0.0%")
-    k3.metric("Crop categories", int(filtered["Crop"].nunique()) if total else 0)
-    k4.metric("Disease classes", int(filtered["Disease"].nunique()) if total else 0)
+    k1.metric(t("Total detections"), total)
+    k2.metric(t("Average confidence"), f"{filtered['Confidence (%)'].mean():.1f}%" if total else "0.0%")
+    k3.metric(t("Crop categories"), int(filtered["Crop"].nunique()) if total else 0)
+    k4.metric(t("Disease classes"), int(filtered["Disease"].nunique()) if total else 0)
 
-    st.markdown("### Detection distribution")
+    st.markdown(f"### {t('Detection distribution')}")
     ch1, ch2 = st.columns(2)
     with ch1:
-        st.markdown("**Detections by crop**")
+        st.markdown(f"**{t('Detections by crop')}**")
         counts = filtered["Crop"].value_counts().rename_axis("Crop").reset_index(name="Detections")
         if counts.empty:
-            st.caption("No records match the selected filters.")
+            st.caption(t("No records match the selected filters."))
         else:
+            counts["Crop"] = counts["Crop"].map(t)
             st.plotly_chart(styled_bar(counts, "Crop"), use_container_width=True)
     with ch2:
-        st.markdown("**Most frequently detected disease classes**")
+        st.markdown(f"**{t('Most frequently detected disease classes')}**")
         counts = filtered["Disease"].value_counts().head(8).rename_axis("Disease").reset_index(name="Detections")
         if counts.empty:
-            st.caption("No records match the selected filters.")
+            st.caption(t("No records match the selected filters."))
         else:
+            counts["Disease"] = counts["Disease"].map(t)
             st.plotly_chart(styled_bar(counts, "Disease", angle=-25), use_container_width=True)
 
     tr, md = st.columns(2)
     with tr:
-        st.markdown("**Detection trend by day**")
+        st.markdown(f"**{t('Detection trend by day')}**")
         trend = filtered.dropna(subset=["Date and time"]).copy()
         if trend.empty:
-            st.caption("Date information is not available for the selected records.")
+            st.caption(t("Date information is not available for the selected records."))
         else:
             trend["Day"] = trend["Date and time"].dt.strftime("%Y-%m-%d")
             daily = trend.groupby("Day").size().reset_index(name="Detections")
@@ -1557,34 +1563,28 @@ elif page == "Business Analytics":
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color=T["text"]), margin=dict(l=8, r=8, t=12, b=8),
                 xaxis=dict(title=None, gridcolor=T["border"], linecolor=T["border"]),
-                yaxis=dict(title="Detections", gridcolor=T["border"], zerolinecolor=T["border"]),
+                yaxis=dict(title=t("Detections"), gridcolor=T["border"], zerolinecolor=T["border"]),
             )
             st.plotly_chart(fig, use_container_width=True)
     with md:
-        st.markdown("**Model usage**")
+        st.markdown(f"**{t('Model usage')}**")
         counts = filtered["Model"].value_counts().rename_axis("Model").reset_index(name="Detections")
         if counts.empty:
-            st.caption("No model records match the selected filters.")
+            st.caption(t("No model records match the selected filters."))
         else:
             st.plotly_chart(styled_bar(counts, "Model"), use_container_width=True)
 
-    st.markdown("### Records for review")
+    st.markdown(f"### {t('Records for review')}")
     cols = ["Date and time", "Crop", "Disease", "Confidence (%)", "Model"]
-    st.dataframe(
-        filtered[cols].sort_values("Date and time", ascending=False),
-        use_container_width=True, hide_index=True,
-    )
+    records_view = localize_table(filtered[cols].sort_values("Date and time", ascending=False))
+    st.dataframe(records_view, use_container_width=True, hide_index=True)
     st.download_button(
-        "Download analytics as CSV",
-        data=filtered[cols].to_csv(index=False).encode("utf-8"),
+        t("Download analytics as CSV"),
+        data=records_view.to_csv(index=False).encode("utf-8-sig"),
         file_name="crop_disease_analytics.csv",
         mime="text/csv",
     )
-    st.caption(
-        "Prototype limitation: this dashboard does not connect to a database, store "
-        "records permanently, or calculate verified commercial KPIs such as revenue, "
-        "yield, or farm-level loss."
-    )
+    st.caption(t("Prototype limitation: this dashboard does not connect to a database, store records permanently, or calculate verified commercial KPIs such as revenue, yield, or farm-level loss."))
 
 
 # ============================================================
@@ -1593,30 +1593,31 @@ elif page == "Business Analytics":
 
 elif page == "Prediction History":
     render_section_heading(
-        "Activity log",
-        "Prediction history",
-        "Review the crop images analyzed during this session.",
+        t("Activity log"),
+        t("Prediction history"),
+        t("Review the crop images analyzed during this session."),
     )
 
     if st.session_state.history:
         history_df = pd.DataFrame(st.session_state.history).drop(columns=["Image hash"], errors="ignore")
 
         h1, h2 = st.columns(2)
-        h1.metric("Total scans", len(history_df))
-        h2.metric("Average confidence", f"{history_df['Confidence (%)'].mean():.2f}%")
+        h1.metric(t("Total scans"), len(history_df))
+        h2.metric(t("Average confidence"), f"{history_df['Confidence (%)'].mean():.2f}%")
 
-        st.dataframe(history_df, use_container_width=True, hide_index=True)
+        shown_history = localize_table(history_df)
+        st.dataframe(shown_history, use_container_width=True, hide_index=True)
         st.download_button(
-            "⬇️ Export history as CSV",
-            data=history_df.to_csv(index=False).encode("utf-8"),
+            t("⬇️ Export history as CSV"),
+            data=shown_history.to_csv(index=False).encode("utf-8-sig"),
             file_name="prediction_history.csv",
             mime="text/csv",
         )
-        if st.button("Clear session history", type="secondary"):
+        if st.button(t("Clear session history"), type="secondary"):
             st.session_state.history = []
             st.rerun()
     else:
-        st.info("No predictions recorded yet. Run a crop health scan to populate your history.")
+        st.info(t("No predictions recorded yet. Run a crop health scan to populate your history."))
 
 
 # ============================================================
@@ -1625,50 +1626,36 @@ elif page == "Prediction History":
 
 else:
     render_section_heading(
-        "Platform overview",
-        "About",
-        "A deep learning interface for preliminary crop leaf disease screening.",
+        t("Platform overview"),
+        t("About"),
+        t("A deep learning interface for preliminary crop leaf disease screening."),
     )
 
-    st.markdown(
-        """
-        This system brings image-based crop disease screening and model
-        explainability into one interface. Upload a leaf image or capture one
-        with your camera, then run a prediction using the configured model.
+    capabilities = [
+        "CNN and MobileNetV2 prediction",
+        "Side-by-side model comparison",
+        "Batch analysis of many images or a ZIP folder, with CSV export",
+        "Probability of the other possible diseases",
+        "Confidence and severity display",
+        "Disease descriptions, treatment, and prevention guidance",
+        "Grad-CAM explainability",
+        "PDF report generation",
+        "AI Agronomist question and answer",
+        "Session prediction history and CSV export",
+        "Interface in English, French and Swahili",
+    ]
+    crop_lines = ["Cashew leaf", "Cassava leaf", "Maize leaf", "Tomato leaf"]
 
-        **Supported crops**
-        - Cashew leaf
-        - Cassava leaf
-        - Maize leaf
-        - Tomato leaf
+    st.markdown(t("This system brings image-based crop disease screening and model explainability into one interface. Upload a leaf image or capture one with your camera, then run a prediction using the configured model."))
+    st.markdown(f"**{t('Supported crops')}**\n" + "\n".join(f"- {t(c)}" for c in crop_lines))
+    st.markdown(f"**{t('Capabilities')}**\n" + "\n".join(f"- {t(c)}" for c in capabilities))
+    st.markdown(f"**{t('Important:')}** " + t("Predictions provide preliminary screening support only. Image quality, lighting, crop variety, and field conditions affect accuracy. Confirm important crop management decisions with an agricultural specialist."))
 
-        **Capabilities**
-        - CNN and MobileNetV2 prediction
-        - Side-by-side model comparison
-        - Batch analysis of many images or a ZIP folder, with CSV export
-        - Probability of the other possible diseases
-        - Confidence and severity display
-        - Disease descriptions, treatment, and prevention guidance
-        - Grad-CAM explainability
-        - PDF report generation
-        - AI Agronomist question and answer
-        - Session prediction history and CSV export
-
-        **Important:** Predictions provide preliminary screening support only.
-        Image quality, lighting, crop variety, and field conditions affect
-        accuracy. Confirm important crop management decisions with an
-        agricultural specialist.
-        """
-    )
-
-    st.info(
-        "To use the system, set the CNN and MobileNetV2 deployment folders in the "
-        "sidebar. They must contain the files expected by your model_loader module."
-    )
+    st.info(t("To use the system, set the CNN and MobileNetV2 deployment folders in the sidebar. They must contain the files expected by your model_loader module."))
 
 
 # ============================================================
 # FOOTER
 # ============================================================
 
-st.markdown(f'<div class="footer">{APP_NAME}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="footer">{t(APP_NAME)}</div>', unsafe_allow_html=True)
