@@ -1,12 +1,10 @@
-# Your uploaded MobileNetV2 file was saved by Keras 2.10.0, which matches TensorFlow 2.10.
-# Replace every line below with the exact versions from `pip freeze` in the environment where the app runs locally.
-tensorflow==2.10.1
-numpy<2
-streamlit
+tensorflow
+tf-keras
+numpy
 pandas
 plotly
+streamlit
 pillow
-
-# Also add the libraries used by your modules folder (PDF report, Gemini assistant, geocoding).
-# I could not see that folder, so I do not know their names.
-# If pip reports a protobuf conflict between tensorflow 2.10 and streamlit, tell me the message.
+reportlab
+google-generativeai
+h5py

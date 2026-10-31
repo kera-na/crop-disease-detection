@@ -12,6 +12,9 @@ import plotly.express as px
 import streamlit as st
 from PIL import Image
 
+import os
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 from modules.model_loader import load_deployment
 from modules.predictor import predict_image, preprocess_image
 from modules.utils import get_severity, models_agree
