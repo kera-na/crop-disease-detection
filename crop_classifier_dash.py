@@ -30,7 +30,7 @@ from modules.experts import (
 from modules.translations import LANGUAGES, LANGUAGE_NAMES, TRANSLATIONS
 
 
-APP_NAME = "Crop Disease Detection System"
+APP_NAME = "Crop Disease and Pest Detection System"
 DEFAULT_ADMIN_CODE = "2026"  # used only when ADMIN_PASSWORD is not set
 CROPS = ["Cashew", "Cassava", "Maize", "Tomato"]
 
@@ -825,7 +825,7 @@ st.markdown(
     <div class="hero">
         <div class="page-title">{t(APP_NAME)}</div>
         <div class="page-subtitle">
-            {t("Screen crop leaf images for disease, compare deep learning models, and review practical treatment guidance.")}
+            {t("Screen crop leaf images for diseases and pests, compare deep learning models, and review practical treatment guidance.")}
         </div>
     </div>
     """,
@@ -1628,7 +1628,7 @@ else:
     render_section_heading(
         t("Platform overview"),
         t("About"),
-        t("A deep learning interface for preliminary crop leaf disease screening."),
+        t("A deep learning interface for preliminary crop leaf disease and pest screening."),
     )
 
     capabilities = [
@@ -1646,7 +1646,7 @@ else:
     ]
     crop_lines = ["Cashew leaf", "Cassava leaf", "Maize leaf", "Tomato leaf"]
 
-    st.markdown(t("This system brings image-based crop disease screening and model explainability into one interface. Upload a leaf image or capture one with your camera, then run a prediction using the configured model."))
+    st.markdown(t("This system brings image-based crop disease and pest screening and model explainability into one interface. Upload a leaf image or capture one with your camera, then run a prediction using the configured model."))
     st.markdown(f"**{t('Supported crops')}**\n" + "\n".join(f"- {t(c)}" for c in crop_lines))
     st.markdown(f"**{t('Capabilities')}**\n" + "\n".join(f"- {t(c)}" for c in capabilities))
     st.markdown(f"**{t('Important:')}** " + t("Predictions provide preliminary screening support only. Image quality, lighting, crop variety, and field conditions affect accuracy. Confirm important crop management decisions with an agricultural specialist."))

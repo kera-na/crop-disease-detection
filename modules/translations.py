@@ -1,4 +1,4 @@
-"""Interface translations for the Crop Disease Detection System.
+"""Interface translations for the Crop Disease and Pest Detection System.
 
 Each row is (English text, French, Swahili). The English text is also the key
 used in crop_classifier_dash.py, for example t("Treatment"). A text that is not
@@ -13,7 +13,7 @@ LANGUAGE_NAMES = {"en": "English", "fr": "French", "sw": "Swahili"}
 
 _ROWS = [
     # ---------- general and sidebar ----------
-    ("Crop Disease Detection System", "Système de détection des maladies des cultures", "Mfumo wa Kutambua Magonjwa ya Mazao"),
+    ("Crop Disease and Pest Detection System", "Système de détection des maladies et des ravageurs des cultures", "Mfumo wa Kutambua Magonjwa na Wadudu Waharibifu wa Mazao"),
     ("Navigation", "Navigation", "Urambazaji"),
     ("Open section", "Ouvrir une section", "Fungua sehemu"),
     ("Disease Detection", "Détection des maladies", "Utambuzi wa Magonjwa"),
@@ -39,9 +39,9 @@ _ROWS = [
     ("Cassava", "Manioc", "Muhogo"),
     ("Maize", "Maïs", "Mahindi"),
     ("Tomato", "Tomate", "Nyanya"),
-    ("Screen crop leaf images for disease, compare deep learning models, and review practical treatment guidance.",
-     "Analysez des images de feuilles pour détecter les maladies, comparez des modèles d'apprentissage profond et consultez des conseils pratiques de traitement.",
-     "Changanua picha za majani ya mazao kutambua magonjwa, linganisha modeli za kujifunza kwa kina, na pata ushauri wa vitendo wa matibabu."),
+    ("Screen crop leaf images for diseases and pests, compare deep learning models, and review practical treatment guidance.",
+     "Analysez des images de feuilles pour détecter maladies et ravageurs, comparez des modèles d'apprentissage profond et consultez des conseils pratiques de traitement.",
+     "Changanua picha za majani ya mazao kutambua magonjwa na wadudu waharibifu, linganisha modeli za kujifunza kwa kina, na pata ushauri wa vitendo wa matibabu."),
     ("{label} folder not found: {folder}", "Dossier {label} introuvable : {folder}", "Folda ya {label} haijapatikana: {folder}"),
     ("{label} could not load: {error}", "Impossible de charger {label} : {error}", "{label} imeshindwa kupakia: {error}"),
     ("CNN model ready", "Modèle CNN prêt", "Modeli ya CNN iko tayari"),
@@ -333,12 +333,12 @@ _ROWS = [
 
     # ---------- about page ----------
     ("Platform overview", "Présentation de la plateforme", "Muhtasari wa jukwaa"),
-    ("A deep learning interface for preliminary crop leaf disease screening.",
-     "Une interface d'apprentissage profond pour le dépistage préliminaire des maladies des feuilles de cultures.",
-     "Kiolesura cha kujifunza kwa kina kwa uchunguzi wa awali wa magonjwa ya majani ya mazao."),
-    ("This system brings image-based crop disease screening and model explainability into one interface. Upload a leaf image or capture one with your camera, then run a prediction using the configured model.",
-     "Ce système réunit dans une seule interface le dépistage des maladies des cultures par image et l'explicabilité des modèles. Téléversez une image de feuille ou prenez-en une avec votre caméra, puis lancez une prédiction avec le modèle configuré.",
-     "Mfumo huu unaleta pamoja uchunguzi wa magonjwa ya mazao kwa picha na ufafanuzi wa modeli katika kiolesura kimoja. Pakia picha ya jani au piga moja kwa kamera, kisha fanya utabiri kwa modeli iliyowekwa."),
+    ("A deep learning interface for preliminary crop leaf disease and pest screening.",
+     "Une interface d'apprentissage profond pour le dépistage préliminaire des maladies et des ravageurs sur les feuilles de cultures.",
+     "Kiolesura cha kujifunza kwa kina kwa uchunguzi wa awali wa magonjwa na wadudu waharibifu kwenye majani ya mazao."),
+    ("This system brings image-based crop disease and pest screening and model explainability into one interface. Upload a leaf image or capture one with your camera, then run a prediction using the configured model.",
+     "Ce système réunit dans une seule interface le dépistage des maladies et des ravageurs des cultures par image et l'explicabilité des modèles. Téléversez une image de feuille ou prenez-en une avec votre caméra, puis lancez une prédiction avec le modèle configuré.",
+     "Mfumo huu unaleta pamoja uchunguzi wa magonjwa na wadudu waharibifu wa mazao kwa picha na ufafanuzi wa modeli katika kiolesura kimoja. Pakia picha ya jani au piga moja kwa kamera, kisha fanya utabiri kwa modeli iliyowekwa."),
     ("Cashew leaf", "Feuille d'anacardier", "Jani la korosho"),
     ("Cassava leaf", "Feuille de manioc", "Jani la muhogo"),
     ("Maize leaf", "Feuille de maïs", "Jani la mahindi"),
