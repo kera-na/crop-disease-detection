@@ -2,6 +2,6 @@
   "display_name": "Custom CNN",
   "image_height": 96,
   "image_width": 96,
-  "best_val_accuracy": 0.7714968323707581,
-  "best_val_loss": 0.85923832654953
+  "best_val_accuracy": 0.8180732727050781,
+  "best_val_loss": 0.7430284023284912
 }
